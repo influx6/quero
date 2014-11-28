@@ -10,7 +10,6 @@
       this.dbpath = this.dbMeta.db;
       this.user = this.dbMeta.username;
       this.pass = this.dbMeta.password;
-      this.collections = {};
     },
     up: function(){
       if(this.state()) return;
@@ -24,9 +23,25 @@
       this.__switchOff();
       this.emit('down',this);
     },
+    registerQueries: function(){
+      this.queryStream.where('$contains',function(m,q,sx){});
+      this.queryStream.where('$stream',function(m,q,sx){});
+      this.queryStream.where('$streamOne',function(m,q,sx){});
+      this.queryStream.where('$find',function(m,q,sx){});
+      this.queryStream.where('$findOne',function(m,q,sx){});
+      this.queryStream.where('$limit',function(m,q,sx){});
+      this.queryStream.where('$filter',function(m,q,sx){});
+      this.queryStream.where('$update',function(m,q,sx){});
+      this.queryStream.where('$cycle',function(m,q,sx){});
+      this.queryStream.where('$insert',function(m,q,sx){});
+      this.queryStream.where('$index',function(m,q,sx){});
+      this.queryStream.where('$yank',function(m,q,sx){});
+      this.queryStream.where('$sort',function(m,q,sx){});
+      this.queryStream.where('$destroy',function(m,q,sx){});
+    },
     get: function(q){
       var res = { query: q, op: 'get' , atom: null};
-      if(_.valids.contains(this.collections,q.with)){
+      if(this.collections.has(q.with)){
         res.message = live.MessageFormat('getDocument','retrieved "'+q.with+'" from cache!');
         res.state = true;
       }
@@ -37,7 +52,7 @@
         }else{
           var k = this.db.get(q.with);
           res.state = k ? true : false;
-          this.collections[q.with] = k;
+          this.collections.add(q.with,k);
           res.message = live.MessageFormat('getDocument','retrieved "'+q.with+'"!');
         }
       }
@@ -46,8 +61,8 @@
     },
     drop: function(q){
       var res = { query: q, op: 'drop' , atom: null};
-      if(_.valids.contains(this.collections,q.with)){
-        this.collections[q.with].drop(function(err,f){
+      if(this.collections.has(q.with)){
+        this.collections.get(q.with).drop(function(err,f){
           res.state = err ? false : true;
           if(!err) res.message = live.MessageFormat('dropCollection','dropped "'+q.with+'" from cache!');
           else res.message = live.MessageFormat('dropDocument','unable to drop '+q.with,err);
@@ -62,9 +77,6 @@
       r.message.name = 'createDocument';
       this.emit('create',r);
       return r;
-    },
-    job: function(q){
-
     },
     internalOp: function(q){
 

@@ -55,22 +55,48 @@ module.exports = (function(){
       this.dbMeta = meta;
       this.events = _.EventStream.make();
       this.queryStream = _.QueryStream(this);
+      this.silentEvents = meta.silentEvents || false;
+      this.collections = _.Storage.make('connector-collections');
 
       var state = _.Switch();
       this.state = function(){ return state.isOn(); };
       this.__switchOn = function(){ return state.on(); };
       this.__switchOff = function(){ return state.off(); };
 
-      this.events.hookProxy(this);
+      this.silentEvents = function(fn){
+        if(!this.silentEvents) return;
+        return fn.apply(this,_.enums.toArray(arguments,1));
+      };
 
-      this.events.events('queryError');
+      //top-level connection-step events
+      this.events.events('up:fail');
+      this.events.events('down:fail');
+      this.events.events('querySync:fail');
+      this.events.events('query');
+      this.events.events('query:fail');
       this.events.events('up');
       this.events.events('down');
       this.events.events('drop');
       this.events.events('get');
       this.events.events('create');
       this.events.events('internalOp');
-      this.events.events('query');
+
+      //low-level queryStream events
+      this.events.events('save');
+      this.events.events('save:fail');
+      this.events.events('update');
+      this.events.events('update:fail');
+      this.events.events('find');
+      this.events.events('find:fail');
+      this.events.events('destroy');
+      this.events.events('destroy:fail');
+
+      //hook up object-to-event proxies
+      this.events.hookProxy(this);
+      this.registerQueries();
+    },
+    registerQueries: function(){
+
     },
     up: function(){
       /* create the connections needed*/
@@ -103,14 +129,16 @@ module.exports = (function(){
         default:
           res = QueryFormat(q,qr,null,false);
           res.message = MessageFormat('queryError','query "'+qr+'" can not be handled',new Error('unknown query'));
-          this.emit('queryError',res);
+          this.emit('query:fail',res);
           break;
       };
       return res;
     },
     queryJob: function(q){
-      var res = QueryFormat(q,q.query,null,false);
-      res.message = MessageFormat('query','query recieved');
+      // var res = QueryFormat(q,q.query,null,false);
+      // res.message = MessageFormat('query','query recieved');
+      if(!_.Query.isQuery(q)) return;
+      this.emit('query',q);
       return this.queryStream.query(q);
     },
     get: function(q){
@@ -131,31 +159,41 @@ module.exports = (function(){
       init: function(meta){
         _.Asserted(_.valids.contains(meta,'adaptor'),'adaptor used not specified in config, eg. { adaptor: mongodb,.. }');
         _.Asserted(_.valids.contains(meta,'db'),'db path used not specified in config, eg. { adaptor:redis,db: localhost:3009/db,.. }');
+        _.Asserted(Quero.hasProvider(meta['adaptor']),'unknown adaptor/connector "'+meta['adaptor']+'", check config');
         this.$super();
-        var master = null;
-        this.uuid = _.Util.guid();
-        this.events = _.EventStream.make();
-        this.schemas = _.Storage.make('quero-schemas');
-        this.slaves = _.Storage.make('quero-slaves');
 
         this.config({
           silentEvents: false,
         });
 
         this.config(meta);
-
-        this.connection = null;
+        this.uuid = _.Util.guid();
+        this.events = _.EventStream.make();
+        this.schemas = _.Storage.make('quero-schemas');
+        this.slaves = _.Storage.make('quero-slaves');
+        this.connection = Quero.createProvider(this.getConfigAttr('adaptor'),meta);
+        this.qstreamCache = [];
+        var master = null;
 
         this.silentEvents = function(fn){
           if(!this.getConfigAttr(silentEvents)) return;
-          fn.call(this);
+          return fn.apply(this,_.enums.toArray(arguments,1));
         };
 
         this.master = function(con){
-          if(this.hasMaster()) return;
+          if(this.hasMaster() || (!Connection.isType(con) && !Quero.isType(con))) return;
           master = con;
-          master.on('querySync',this.syncQuery);
-          master.slave(this);
+          if(Quero.isInstance(master)){
+            master.on('querySync',this.syncQuery);
+            master.slave(this);
+          }else{
+            master.on('query',this.syncQuery);
+          }
+          this.emit('newMaster',master);
+        };
+
+        this.isMaster = function(n){
+          return master === n;
         };
 
         this.hasMaster = function(){
@@ -165,30 +203,78 @@ module.exports = (function(){
         this.releaseMaster = function(){
           if(!this.hasMaster()) return;
           master.off('querySync',this.syncQuery);
+          this.emit('deadMaster',master);
           master = null;
         };
 
         this.events.events('up');
         this.events.events('down');
+        this.events.events('up:fail');
+        this.events.events('down:fail');
+        this.events.events('querySync:fail');
         this.events.events('querySync');
+        this.events.events('newMaster');
+        this.events.events('deadMaster');
+        this.events.events('newSlave');
+        this.events.events('deadSlave');
         this.events.hookProxy(this);
-      },
-      schema: function(title,map,meta){
 
+        this.connection.after('up',this.$bind(function(){
+          this.emit('up',this);
+        }));
+        this.connection.after('down',this.$bind(function(){
+          this.emit('down',this);
+        }));
+        this.connection.after('up:fail',this.$bind(function(){
+          this.emit('up:fail',this);
+        }));
+        this.connection.after('down:fail',this.$bind(function(){
+          this.emit('down:fail',this);
+        }));
+      },
+      up: function(){
+        return this.connection.up();
+      },
+      down: function(){
+        return this.connection.down();
+      },
+      schema: function(title,map,meta,vals){
+        if(this.schemas.has(title)) return;
+        this.schemas.add(title,_.Schema({},map,meta,vals));
+      },
+      model: function(title){
+        if(!this.schemas.has(title)) return;
+        var qr = _.Query(title,this.schemas.get(title));
+        qr.notify.add(this.$bind(this.syncQuery));
+        return qr;
       },
       slave: function(type,meta){
         if(_.valids.isString(type) && Quero.hasProvider(type)){
           var con =  Quero.createProvider(type,meta);
           this.emit('newSlave',con,meta);
+          this.on('querySync',con.queryJob);
+          this.slaves.add(con);
         }
-        if(!Connection.isType(type)) return;
-        if(this.slaves.has(type) || type.hasMaster()) return;
-        type.master(this);
+        if(!Connection.isType(type) || this.isMaster(type)) return;
+        if(this.slaves.has(type)) return;
+        this.on('querySync',type.queryJob);
         this.slaves.add(type);
         this.emit('newSlave',type,meta);
       },
+      unslave: function(type){
+        if(!Connection.isType(type) || !this.slaves.has(type)) return;
+        this.off('querySync',type.queryJob);
+        this.slaves.remove(type);
+      },
       syncQuery: function(q){
-
+        if(!_.Query.isQuery(q)) return;
+        this.after('up',function(){
+          this.connection.queryJob(q);
+          this.qstreamCache.push(qs);
+        });
+        this.after('up:fail',this.$bind(function(){
+          this.emit('querySync:fail',q);
+        }));
       },
     },{
       providers: Connections.make(),
