@@ -24,18 +24,24 @@
       this.emit('down',this);
     },
     registerQueries: function(){
-      this.queryStream.where('$contains',function(m,q,sx){});
-      this.queryStream.where('$stream',function(m,q,sx){});
-      this.queryStream.where('$streamOne',function(m,q,sx){});
+      //external to internal data fetchers for stream
       this.queryStream.where('$find',function(m,q,sx){});
       this.queryStream.where('$findOne',function(m,q,sx){});
+      this.queryStream.where('$stream',function(m,q,sx){});
+      this.queryStream.where('$streamOne',function(m,q,sx){});
+
+      //internal adders into stream operations
+      this.queryStream.where('$insert',function(m,q,sx){});
+
+      //internal stream-item only operations
+      this.queryStream.where('$update',function(m,q,sx){});
+      this.queryStream.where('$yank',function(m,q,sx){});
+
+      this.queryStream.where('$contains',function(m,q,sx){});
+      this.queryStream.where('$index',function(m,q,sx){});
       this.queryStream.where('$limit',function(m,q,sx){});
       this.queryStream.where('$filter',function(m,q,sx){});
-      this.queryStream.where('$update',function(m,q,sx){});
       this.queryStream.where('$cycle',function(m,q,sx){});
-      this.queryStream.where('$insert',function(m,q,sx){});
-      this.queryStream.where('$index',function(m,q,sx){});
-      this.queryStream.where('$yank',function(m,q,sx){});
       this.queryStream.where('$sort',function(m,q,sx){});
       this.queryStream.where('$destroy',function(m,q,sx){});
     },
