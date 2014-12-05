@@ -82,6 +82,7 @@ module.exports = (function(){
       this.events.events('internalOp');
 
       //low-level queryStream events
+      this.events.events('query:done');
       this.events.events('save');
       this.events.events('save:fail');
       this.events.events('update');
@@ -96,8 +97,6 @@ module.exports = (function(){
       this.registerQueries();
 
       this.$secure('queryJob',function(q){
-        // var res = QueryFormat(q,q.query,null,false);
-        // res.message = MessageFormat('query','query recieved');
         if(!_.Query.isQuery(q)) return;
         this.emit('query',q);
         return this.queryStream.query(q);
@@ -120,9 +119,6 @@ module.exports = (function(){
       var qr = q.query;
       var res;
       switch(qr){
-        case 'create':
-          res = this.create(q);
-          break;
         case 'get':
           res = this.get(q);
           break;
@@ -148,9 +144,6 @@ module.exports = (function(){
     },
     drop: function(q){
       _.Asserted(false,"must redefine function 'drop' in subclass");
-    },
-    create: function(q){
-      _.Asserted(false,"must redefine function 'create' in subclass");
     },
     internalOp: function(){
       _.Asserted(false,"must redefine function 'internalOp' in subclass");
@@ -181,10 +174,10 @@ module.exports = (function(){
 
         this.$secure('syncQuery',function(q){
           if(!_.Query.isQuery(q)) return;
-          this.after('up',function(){
+          this.after('up',this.$bind(function(){
             this.connection.queryJob(q);
-            this.qstreamCache.push(qs);
-          });
+            this.qstreamCache.push(q);
+          }));
           this.after('up:fail',this.$bind(function(){
             this.emit('querySync:fail',q);
           }));
