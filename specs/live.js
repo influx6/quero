@@ -61,7 +61,7 @@ _.Jazz('livedb mongo adaptor specification',function($){
       });
     });
   })
-  .use('saveChangeAndStream')
+  .use('saveAndStream')
   .xstream(function(){
     this.in().on(function(d){
       $('can i receive data from group stream for save stream',function(k){

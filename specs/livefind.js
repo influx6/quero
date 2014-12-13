@@ -22,27 +22,20 @@ _.Jazz('livedb mongo adaptor specification',function($){
   users
   .where({})
   .xstream(function(){
-    this.onError(_.tags.tagDefer('where-error'));
     this.out().on(function(d){
       $('can i retrieve data from db',function(k){
         k.sync(function(m,g){
-          console.log('where:',m);
           _.Expects.truthy(m);
         });
       }).use(d);
     });
   })
   .use('update',{ key: 'name', from:'alex', to: 'buttocks'})
-  .xstream(function(){
-    this.onError(_.tags.tagDefer('update-error'));
-  })
   .use('filter',{ key: 'name', value:'john'})
   .xstream(function(){
-    this.onError(_.tags.tagDefer('filter-error'));
     this.in().on(function(d){
       $('can i filter data in stream',function(k){
         k.sync(function(m,g){
-          console.log('filter-in:',m);
           _.Expects.truthy(m);
         });
       }).use(d);
@@ -51,7 +44,6 @@ _.Jazz('livedb mongo adaptor specification',function($){
     this.out().on(function(d){
       $('can i filter data saved from stream',function(k){
         k.sync(function(m,g){
-          console.log('filter-out:',m);
           _.Expects.truthy(m);
         });
         k.for(d)
@@ -60,23 +52,20 @@ _.Jazz('livedb mongo adaptor specification',function($){
   })
   .use('update',{ key: 'email', to:'trinox3001@yahoo.com'})
   .xstream(function(){
-    this.onError(_.tags.tagDefer('update-error'));
     this.out().on(function(d){
       $('can i update email in stream',function(k){
         k.sync(function(m,g){
-          console.log('update-out:',m);
           _.Expects.truthy(m);
         });
         k.for(d)
       });
     });
   })
-  .use('saveChangeAndStream')
+  .use('saveAndStream')
   .xstream(function(){
     this.in().on(function(d){
       $('can i save data in stream',function(k){
         k.sync(function(m,g){
-          console.log('save-in:',m);
           _.Expects.truthy(m);
         });
       }).use(d);
@@ -85,26 +74,47 @@ _.Jazz('livedb mongo adaptor specification',function($){
     this.out().on(function(d){
       $('can i receive data saved from stream',function(k){
         k.sync(function(m,g){
-          console.log('save-out:',m);
           _.Expects.truthy(m);
         });
         k.for(d)
       });
     });
 
+    this.then(_.tags.tagDefer('save-done:'+new Date()));
     this.onError(_.tags.tagDefer('save-error:'+new Date()));
   })
-  // .use('destroy',{ name: 'felix'})
-  // .use('insert',{ name: 'felix', email:'trinoxf@gmail.com', tel: '0645544545'})
-  // .use('saveChange')
+  .use('destroy',{ name: 'felix'})
+  .use('insert',{ name: 'felix', email:'trinoxf@gmail.com', tel: '0645544545'})
+  .xstream(function(){
+    this.in().on(function(d){
+      console.log('in',d);
+    });
+
+    this.out().on(function(d){
+      console.log('out',d);
+    });
+    this.then(_.tags.tagDefer('insert-done:'+new Date()));
+    this.onError(_.tags.tagDefer('insert-error:'+new Date()));
+  })
+  .use('save',{ id: 'name' })
+  .xstream(function(){
+    this.in().on(function(d){
+      console.log('save2-in',d);
+    });
+
+    this.out().on(function(d){
+      console.log('save2-out',d);
+    });
+    this.then(_.tags.tagDefer('save2-done:'+new Date()));
+    this.onError(_.tags.tagDefer('save2-error:'+new Date()));
+  })
   // .use('drop')
   .end();
 
 
   var fc = users.future();
-  fc.changes().on(_.tags.tagDefer('changes-stream'))
-  fc.onError(_.tags.tagDefer('finished-error:'+new Date()));
   fc.onError(function(d){
+    console.log('errord:',d);
     conn.down();
   })
   .then(function(d){
@@ -119,7 +129,5 @@ _.Jazz('livedb mongo adaptor specification',function($){
     });
     k.for(conn);
   });
-
-  // conn.down();
 
 });
