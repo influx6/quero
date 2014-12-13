@@ -169,13 +169,19 @@ module.exports = (function(){
         this.connection = Quero.createProvider(this.getConfigAttr('adaptor'),meta);
         this.qstreamCache = [];
 
+        Quero.schemaOperands.each(this.$bind(function(e,i,o,fx){
+          if(this.connection.queryStream.hasWhere(i)) return fx(null);
+          this.connection.queryStream.where(i,e);
+        }));
+
         this.events.hookProxy(this);
         var master = null;
 
-        this.$secure('syncQuery',function(q){
+        this.$secure('syncQuery',function(q,fx){
           if(!_.Query.isQuery(q)) return;
           this.after('up',this.$bind(function(){
-            this.connection.queryJob(q);
+            var res = this.connection.queryJob(q);
+            if(_.valids.isFunction(fx)) fx.call(res);
             this.qstreamCache.push(q);
           }));
           this.after('up:fail',this.$bind(function(){
@@ -254,12 +260,22 @@ module.exports = (function(){
         if(this.schemas.has(title)) return;
         this.schemas.add(title,_.Schema({},map,meta,vals));
       },
-      model: function(title){
+      model: function(title,fn){
         _.Asserted(_.valids.isString(title),'a string title/name for model must be supplied');
         title = title.toLowerCase();
         if(!this.schemas.has(title)) return;
-        var qr = _.Query(title,this.schemas.get(title));
-        qr.notify.add(this.$bind(this.syncQuery));
+        var qr = _.Query(title,this.schemas.get(title),fn);
+        var ft = _.FutureStream.make();
+        qr.future = function(){ return ft; };
+        // qr.notify.add(this.$bind(this.syncQuery));
+        qr.notify.add(this.$bind(function(q){
+          ft.query = q;
+          this.syncQuery(q,function(tr){
+            if(this && _.FutureStream.isType(this)){
+              this.chain(ft);
+            }
+          });
+        }));
         return qr;
       },
       slave: function(t,conf){
@@ -305,11 +321,21 @@ module.exports = (function(){
         this.emit('deadSlave',type);
       },
     },{
+      schemaOperands: _.Storage.make('schema-operations-map'),
       providers: Connections.make(),
       Connections: Connections,
       Connection: Connection,
       MessageFormat: MessageFormat,
       QueryFormat: QueryFormat,
+      hasWhereSchema: function(tag){
+        return Quero.schemaOperands.has(tag);
+      },
+      whereSchema: function(tag,fn){
+        return Quero.schemaOperands.add(tag,fn);
+      },
+      unwhereSchema: function(tag,fn){
+        return Quero.schemaOperands.remove(tag);
+      },
       createProvider: function(n,f){
         return Quero.providers.create(n,f);
       },
@@ -323,6 +349,467 @@ module.exports = (function(){
         return Quero.providers.has(f);
       }
   });
+
+  //internal stream-item only operations
+  Quero.whereSchema('$insert',function(m,q,sx,sm){
+      sx.loopStream();
+      sx.in().emit(q.key);
+      sx.complete({'op':'insert','state':true});
+  });
+
+  Quero.whereSchema('$group',function(m,q,sx,sm){
+    var six = sx.in(), data = [];
+    six.on(function(d){ data.push(d); });
+    six.afterEvent('dataEnd',function(){
+      sx.complete({'op':'group','state': data.length > 0 ? true : false });
+    });
+    sx.then(function(d){
+      sx.out().emit(data);
+      sx.out().emitEvent('dataEnd',true);
+    });
+  });
+
+  Quero.whereSchema('$ungroup',function(m,q,sx,sm){
+    var six = sx.in(), data = [];
+
+    six.on(function(d){
+      if(_.valids.isList(d)) data = d;
+      else data.push(d);
+    });
+
+    six.afterEvent('dataEnd',function(){
+      if(_.valids.notExists(data)) return;
+      _.enums.each(data,function(e,i,o,fn){
+        sx.out().emit(e);
+        return fn(null);
+      },function(_,err){
+        sx.out().emitEvent('dataEnd',true);
+        data = null;
+      });
+      sx.complete(data);
+    });
+
+  });
+
+  //format: { condition: , key:, from: , to: , mutator: }
+  Quero.whereSchema('$update',function(m,q,sx,sm){
+    var data = q.key,
+        condfn = data.condition,
+        mutator = data.mutator,
+        key = data.key,
+        from  = data.from,
+        to = data.to;
+
+    if(_.valids.not.isObject(data)) return sx.completeError(new Error('invalid query object'));
+
+    var clond,sid = sx.in(), soud = sx.out(), scand = sx.changes(), updator = function(doc,ke){
+      var vf = doc[key];
+      if(from){
+        if(_.Util.isType(vf) === _.Util.isType(vf) && vf == from){
+          if(_.Util.isFunction(to)){ doc[key] = to.call(doc,doc[key],from); }
+          else{
+            doc[key] = to;
+          }
+          return doc;
+        }
+        if(_.valids.isRegExp(from) && from.test(vf)){
+          if(_.Util.isFunction(to)){ doc[key] = to.call(doc,doc[key],from); }
+          else{
+            doc[key] = to;
+          }
+          return doc;
+        }
+      }else{
+        if(_.Util.isFunction(to)){ doc[key] = to.call(doc,doc[key],from); }
+        else{
+          doc[key] = to;
+        }
+        return doc;
+      }
+    };
+
+    sid.afterEvent('dataEnd',function(){
+      sx.complete(true);
+      soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
+    });
+
+    sid.on(function(doc){
+
+      clond = _.Util.clone(doc);
+      if(_.valids.isFunction(data)){
+        var ndoc = data.call(doc,doc);
+        if(_.valids.exist(ndoc)){
+          soud.emit(ndoc);
+          scand.emit([ndoc,clond]);
+        }
+      }
+      if(_.valids.isObject(data)){
+        var udoc;
+        if(condfn){
+          if(condfn.call(data,doc)){
+            if(_.valids.isFunction(mutator)){
+              udoc = mutator.call(data,doc);
+            }else{
+              if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+                udoc = updator(doc,key);
+              }
+              if(_.valids.isPrimitive(doc)){
+                if(from && doc == from){
+                  if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
+                  else{ udoc = to; }
+                }
+                else if(_.valids.isRegExp(from) && from.test(doc)){
+                  if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
+                  else{ udoc = to; }
+                }
+                else{
+                  if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
+                  else{ udoc = to; }
+                }
+              }
+            }
+          }
+        }else{
+          if(_.valids.isFunction(mutator)){
+            udoc = mutator.call(data,doc);
+          }else{
+            if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+              udoc = updator(doc,key);
+            }
+            if(_.valids.isPrimitive(doc)){
+              if(from && doc == from){
+                if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
+                else{ udoc = to; }
+              }
+              else if(_.valids.isRegExp(from) && from.test(doc)){
+                if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
+                else{ udoc = to; }
+              }
+              else{
+                if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
+                else{ udoc = to; }
+              }
+            }
+          }
+        }
+
+        if(_.valids.exists(udoc)){
+          soud.emit(udoc);
+          scand.emit([udoc,clond]);
+        }else{
+          soud.emit(doc);
+        }
+      }
+    });
+
+  });
+
+  //format: { condition: , key:, value:, getter:  , setter:}
+  Quero.whereSchema('$yank',function(m,q,sx,sm){
+    var data = q.key,
+        condfn = data.condition,
+        getter = data.getter,
+        key = data.key,
+        value  = data.value;
+
+    if(_.valids.not.isObject(data)) return;
+
+    var clond,sid = sx.in(), soud = sx.out(),report = sx.changes();
+
+    sid.afterEvent('dataEnd',function(){
+      soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
+    });
+
+    var udoc = false;
+    sid.on(function(doc){
+        if(condfn){
+          if(condfn.call(data,doc)){
+            if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+              if(value){
+                vak = _.valids.isFunction(getter) ? getter.call(doc,key) : doc[key];
+                if(value && value == vak){ udoc = true; }
+                if(_.valids.isRegExp(value) && value.test(vak)){ udoc = true; }
+                if(_.valids.isFunction(value) && value.call(data,doc,vak)){ udoc = true; }
+              }else{
+                udoc = true;
+              }
+            }
+            if(_.valids.isPrimitive(doc)){
+              if(value){
+                if(value && value == doc){ udoc = true; }
+                if(_.valids.isRegExp(value) && value.test(doc)){ udoc = true; }
+                if(_.valids.isFunction(value) && value.call(data,doc)){ udoc = true; }
+              }else{
+                udoc = true;
+              }
+            }
+          }
+        }else{
+          if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+            if(value){
+              vak = _.valids.isFunction(getter) ? getter.call(doc,key) : doc[key];
+              if(value && value == vak){ udoc = true; }
+              if(_.valids.isRegExp(value) && value.test(vak)){ udoc = true; }
+              if(_.valids.isFunction(value) && value.call(data,doc,vak)){ udoc = true; }
+            }else{
+              udoc = true;
+            }
+          }
+          if(_.valids.isPrimitive(doc)){
+            if(value){
+              if(value && value == doc){ udoc = true; }
+              if(_.valids.isRegExp(value) && value.test(doc)){ udoc = true; }
+              if(_.valids.isFunction(value) && value.call(data,doc)){ udoc = true; }
+            }else{
+              udoc = true;
+            }
+          }
+        }
+        if(udoc){
+          if(_.valids.isObject(doc)){
+            var ddoc = _.Util.clone(doc);
+            if(_.valids.isFunction(setter)){
+              setter.call(doc,key,null);
+            }else{
+              delete doc[key];
+            };
+            report.emit([ddoc,doc]);
+            soud.emit(doc);
+          }else{
+            var ddoc = (_.valids.isFunction(setter) ? setter.call(doc,key) : doc);
+            report.emit([ddoc,doc]);
+            soud.emit(ddoc);
+          }
+        }else{
+          soud.emit(doc);
+        }
+    });
+
+  });
+
+  //format: { condition: , key:, value:, getter:  }
+  //format: { condition: , key:, value:  }
+  Quero.whereSchema('$contains',function(m,q,sx,sm){
+    var data = q.key,
+        condfn = data.condition,
+        getter = data.getter,
+        key = data.key,
+        value  = data.value;
+
+    var clond,sid = sx.in(), soud = sx.out();
+
+    sid.afterEvent('dataEnd',function(){
+      soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
+    });
+
+    sid.on(function(doc){
+      if(_.valids.isObject(data)){
+        var udoc;
+        if(condfn){
+          if(condfn.call(data,doc)){
+            if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+              if(value){
+                var vak = _.valids.isFunction(getter) ? getter.call(doc,key) : doc[key];
+                if(value && value == vak){ udoc = true; }
+                if(_.valids.isRegExp(value) && value.test(vak)){ udoc = true; }
+                if(_.valids.isFunction(value) && value.call(data,doc,vak)){ udoc = true; }
+              }else{
+                udoc = true;
+              }
+            }
+            if(_.valids.isPrimitive(doc)){
+              if(value){
+                if(value && value == doc){ udoc = true; }
+                if(_.valids.isRegExp(value) && value.test(doc)){ udoc = true; }
+                if(_.valids.isFunction(value) && value.call(data,doc)){ udoc = true; }
+              }else{
+                udoc = true;
+              }
+            }
+          }
+        }else{
+          if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+            if(value){
+              var vak = _.valids.isFunction(getter) ? getter.call(doc,key) : doc[key];
+              if(value && value == vak){ udoc = true; }
+              if(_.valids.isRegExp(value) && value.test(vak)){ udoc = true; }
+              if(_.valids.isFunction(value) && value.call(data,doc,vak)){ udoc = true; }
+            }else{
+              udoc = true;
+            }
+          }
+          if(_.valids.isPrimitive(doc)){
+            if(value){
+              if(value && value == doc){ udoc = true; }
+              if(_.valids.isRegExp(value) && value.test(doc)){ udoc = true; }
+              if(_.valids.isFunction(value) && value.call(data,doc)){ udoc = true; }
+            }else{
+              udoc = true;
+            }
+          }
+        }
+        if(udoc){
+          soud.emit(doc);
+        }
+      }
+    });
+
+  });
+
+  //format: (total)
+  Quero.whereSchema('$limit',function(m,q,sx,sm){
+    var data = q.key,sid = sx.in(), soud = sx.out(),count = 0;
+
+    if(_.valids.not.isNumber(data)) return;
+
+    sid.on(function(doc){
+      if(count >= data) return sid.close();
+      soud.emit(doc);
+      count += 1;
+    });
+
+    sid.afterEvent('dataEnd',sx.$bind(sx.complete));
+
+
+  });
+
+  //format: { condition: , key:, value:, getter:  }
+  //format: { condition: , key:, value:  }
+  Quero.whereSchema('$filter',function(m,q,sx,sm){
+    var data = q.key,
+        condfn = data.condition,
+        getter = data.getter,
+        key = data.key,
+        count = 0,
+        value  = data.value;
+
+    var clond,sid = sx.in(), soud = sx.out();
+
+    sid.afterEvent('dataEnd',function(){
+      if(count <= 0) sx.completeError(new Error('NonFound!'));
+      else sx.complete(true);
+      soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
+    });
+
+    var udoc = false;
+    sid.on(function(doc){
+      if(_.valids.isObject(data)){
+        if(condfn){
+          if(condfn.call(data,doc)){
+            if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+              if(value){
+                var vak = _.valids.isFunction(getter) ? getter.call(doc,key) : doc[key];
+                if(value && value == vak){ udoc = true; }
+                if(_.valids.isRegExp(value) && value.test(vak)){ udoc = true; }
+                if(_.valids.isFunction(value) && value.call(data,doc,vak)){ udoc = true; }
+              }else{
+                udoc = true;
+              }
+            }
+            if(_.valids.isPrimitive(doc)){
+              if(value){
+                if(value && value == doc){ udoc = true; }
+                if(_.valids.isRegExp(value) && value.test(doc)){ udoc = true; }
+                if(_.valids.isFunction(value) && value.call(data,doc)){ udoc = true; }
+              }else{
+                udoc = true;
+              }
+            }
+          }
+        }else{
+          if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
+            if(value){
+              var vak = _.valids.isFunction(getter) ? getter.call(doc,key) : doc[key];
+              if(value && value == vak){ udoc = true; }
+              if(_.valids.isRegExp(value) && value.test(vak)){ udoc = true; }
+              if(_.valids.isFunction(value) && value.call(data,doc,vak)){ udoc = true; }
+            }else{
+              udoc = true;
+            }
+          }
+          if(_.valids.isPrimitive(doc)){
+            if(value){
+              if(value && value == doc){ udoc = true; }
+              if(_.valids.isRegExp(value) && value.test(doc)){ udoc = true; }
+              if(_.valids.isFunction(value) && value.call(data,doc)){ udoc = true; }
+            }else{
+              udoc = true;
+            }
+          }
+        }
+
+        if(udoc){
+          soud.emit(doc);
+          count += 1;
+        }
+      }
+    });
+
+  });
+
+  //format: { condition: , bykey: or byvalue:, getter:  }
+  //format: { condition: , byKey: or byValue:  }
+  Quero.whereSchema('$sort',function(m,q,sx,sm){
+
+  });
+
+  Quero.whereSchema('$byCount',function(m,q,sx,sm){
+    var total = q.key.total, data = [];
+
+    sx.complete(true);
+    sx.then(function(){
+
+      var pushOut = function(){
+        var cur = _.enums.nthRest(data,0,total);
+        sx.out().emit(cur);
+        sx.out().emitEvent('dataEnd',true);
+      };
+
+      sx.in().on(function(d){
+        if(total && data.length >= total) pushOut();
+        data.push(d);
+      });
+
+    });
+
+  });
+
+  Quero.whereSchema('$byMs',function(m,q,sx,sm){
+    var ms = q.key.ms, data = [];
+
+    sx.complete(true);
+
+    sx.then(function(){
+
+      sx.in().on(function(d){
+        data.push(d);
+      });
+
+      var pushOut = function(){
+        var cur = data; data = [];
+        sx.out().emit(cur);
+        sx.out().emitEvent('dataEnd',true);
+      };
+
+      var time = setInterval(function(){
+        return pushOut();
+      },ms)
+
+      sx.onError(function(){
+        time.cancel();
+      });
+
+    });
+
+
+  });
+
+  // var QueryDoc = _.Class({
+  //   init: function(doc,mutator){
+  //     this.revs = _.List.make();
+  //     this.doc = doc;
+  //   },
+  // });
 
   return Quero;
 }());
