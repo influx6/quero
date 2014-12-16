@@ -14,7 +14,8 @@ _.enums.eachBy(function(e){
         db: m.url,
       });
 
-
+      conn.connection.changes.on(_.tags.tagDefer('love'));
+      
       $('can i create a livedb instance',function(k){
         k.sync(function(c,g){
           _.Expects.truthy(c);
