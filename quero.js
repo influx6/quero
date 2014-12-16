@@ -456,6 +456,13 @@ module.exports = (function(){
           }
           return doc;
         }
+        if(_.valids.isFunction(from) && from.call(null,vf)){
+          if(_.Util.isFunction(to)){ doc[key] = to.call(doc,doc[key],from); }
+          else{
+            doc[key] = to;
+          }
+          return doc;
+        }
         if(_.valids.isRegExp(from) && from.test(vf)){
           if(_.Util.isFunction(to)){ doc[key] = to.call(doc,doc[key],from); }
           else{
@@ -501,6 +508,13 @@ module.exports = (function(){
                 if(from && doc == from){
                   if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }
                   else{ udoc = to; }
+                }
+                else if(_.valids.isFunction(from) && from.call(null,doc)){
+                  if(_.Util.isFunction(to)){ udoc = to.call(doc,doc[key],from); }
+                  else{
+                    doc[key] = to;
+                  }
+                  return doc;
                 }
                 else if(_.valids.isRegExp(from) && from.test(doc)){
                   if(_.Util.isFunction(to)){ udoc = to.call(doc,doc,from); }

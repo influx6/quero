@@ -68,8 +68,9 @@ _.enums.eachBy(function(e){
         });
       })
       .use('yank',{ key:'ps'  })
-      .use('update',{ key:'name', from: /felix|jerry/, to: function(i){ return i+":Joker";} })
-      .use('contains',{ key:'name', value:/felix/  })
+      .use('update',{ key:'age', from: function(i){ return i > 20; }, to: function(i){ return i/100;}})
+      .use('contains',{ key:'name', value: /felix/  })
+      .use('destroy')
       .use('drop')
       .end();
 

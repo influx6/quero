@@ -93,26 +93,42 @@
 
       this.queryStream.where('$destroy',function(m,q,sx,sm){
         // sx.loopStream();
-        var model = this.get(m);
-        sx.in().on(function(doc){
-          model.remove(doc)
+        var map = this.get(m), count = 0;
+        var index = this.index, by = index ? index.index : null;
+
+        sx.in().on(this.$bind(function(doc){
+          map.remove(doc)
           .error(sx.$bind(sx.completeError))
-          .success(sx.$bind(sx.complete));
+          .success(this.$bind(function(){
+             this.changes.emit({ 'i': 'd', record: doc });
+             count += 1;
+          }));
+        }));
+
+        sx.in().onEvent('dataEnd',function(){
+          sx.out().emit({});
+          sx.out().endData();
+          sx.complete({ 'records': count, with: q.key, op: 'destroy' });
         });
 
-        sx.then(function(d){
-          sx.out.emit({});
-          sx.out().emitEvent('dataEnd',true);
-        });
       });
 
       this.queryStream.where('$destroyAndStream',function(m,q,sx,sm){
         sx.loopStream();
-        var model = this.get(m);
-        sx.in().on(function(doc){
-          model.remove(doc)
+        var map = this.get(m), count = 0;
+        var index = this.index, by = index ? index.index : null;
+
+        sx.in().on(this.$bind(function(doc){
+          map.remove(doc)
           .error(sx.$bind(sx.completeError))
-          .success(sx.$bind(sx.complete));
+          .success(this.$bind(function(){
+             this.changes.emit({ 'i': 'd', record: doc });
+             count += 1;
+          }));
+        }));
+
+        sx.in().onEvent('dataEnd',function(){
+          sx.complete({ 'records': count, with: q.key, op: 'destroy' });
         });
       });
 
