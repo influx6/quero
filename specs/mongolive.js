@@ -23,7 +23,7 @@ _.Jazz('livedb mongo adaptor specification',function($){
   conn.once('queryError',function(f){
     $('mongo connector can not deal with invalid queries?',function(k){
       k.sync(function(c,g){
-        expects.falsy(c.state);
+        expects.falsy(c.state());
       });
       k.for(f);
     });

@@ -12,27 +12,26 @@
       this.pass = this.dbMeta.password;
     },
     up: function(){
-      if(this.state()) return;
-      this.db = monk(this.dbpath);
-      this.__switchOn();
-      this.emit('up',this);
+      return this.$super(function(){
+        this.db = monk(this.dbpath);
+      });
     },
     down: function(){
-      if(!this.state()) return;
-      _.Util.nextTick(this.$bind(function(){
+      return this.$super(function(){
         this.db.close();
-        this.__switchOff();
-        this.emit('down',this);
-      }));
+      });
     },
     registerQueries: function(){
       //external to internal data fetchers for stream
-      this.queryStream.where('$find',this.$bind(function(m,q,sx){
+      this.queryStream.where('$find',function(m,q,sx){
+
         var mode = this.get(m);
         mode
         .find(q.key)
         .error(sx.$bind(sx.completeError))
-        .success(sx.$bind(sx.complete));
+        .success(function(d){
+          sx.complete(d);
+        });
 
         sx.then(function(doc){
           var sm = sx.out();
@@ -41,7 +40,8 @@
           });
         });
 
-      }));
+
+      });
 
       this.queryStream.where('$findOne',function(m,q,sx,sm){
         var mode = this.get(m);
@@ -101,6 +101,7 @@
         });
 
         sx.then(function(d){
+          sx.out.emit({});
           sx.out().emitEvent('dataEnd',true);
         });
       });
@@ -191,16 +192,18 @@
       this.queryStream.where('$index',function(m,q,sx,sm){
         var mode = this.get(m), ind;
 
-        if(_.valids.isString(q.key)){ ind = {}; ind.indexes = q.key; };
+        if(_.valids.isString(q.key)){ ind = {}; ind.index = q.key; };
         if(_.valids.isObject(q.key)){ ind = q.key; }
-        if(_.valids.isList(q.key)){ ind = {}; ind.indexes = q.key };
+        if(_.valids.isList(q.key)){ ind = {}; ind.index = q.key };
         if(_.valids.not.isString(q.key) && _.valids.not.isList(q.key) && _.valids.not.isObject(q.key)) return;
         ind.options = q.key.options;
 
         mode
-        .index(ind.indexes,ind.options)
+        .index(ind.index,ind.options)
         .error(sx.$bind(sx.completeError))
-        .success(sx.$bind(sx.complete));
+        .success(function(d){
+          sx.complete({'op':'index', by: q.key, res: d});
+        });
 
         sx.then(function(doc){
           var sm = sx.out();
@@ -215,10 +218,7 @@
 
           sx.then(this.$bind(function(){
             var model = this.get(m);
-            model
-            .drop()
-            .error(sx.$bind(sx.completeError))
-            .success(sx.$bind(sx.complete));
+            model.drop();
           }));
 
       });

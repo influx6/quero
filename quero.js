@@ -51,12 +51,24 @@ module.exports = (function(){
   var Connection = _.Class({
     init: function(meta){
       _.Asserted(_.valids.isObject(meta),'a configuration object/map must be passed!');
-      _.Asserted(_.valids.contains(meta,'db'),'a "db" must exists within the config object');
+      _.Asserted(_.valids.contains(meta,'db'),'a "db" attr must exists within the config object');
       this.dbMeta = meta;
       this.events = _.EventStream.make();
       this.queryStream = _.QueryStream(this);
       this.silentEvents = meta.silentEvents || false;
       this.collections = _.Storage.make('connector-collections');
+      this.changes = _.Stream.make();
+      this.queries = _.Stream.make();
+
+      // this.changes.transform(function(i){
+      //   if(_.valids.isObject(i)) return i;
+      //   return null;
+      // });
+
+      this.queries.transform(function(i){
+        if(_.valids.isObject(i)) return i;
+        return null;
+      });
 
       var state = _.Switch();
       this.state = function(){ return state.isOn(); };
@@ -96,23 +108,70 @@ module.exports = (function(){
       this.events.hookProxy(this);
       this.registerQueries();
 
-      this.$secure('queryJob',function(q){
+      this.$secure('queryJob',function(q,fx){
         if(!_.Query.isQuery(q)) return;
-        this.emit('query',q);
-        return this.queryStream.query(q);
+        this.after('up',this.$bind(function(){
+          var res = this.queryStream.query(q);
+          if(_.valids.isFunction(fx)) fx.call(res);
+          // this.emit('query',q);
+        }));
+        this.after('up:fail',this.$bind(function(){
+          this.emit('querySync:fail',q);
+        }));
       });
 
+    },
+    up: function(fn){
+      if(this.state()) return;
+      _.funcs.immediate(this.$bind(fn));
+      this.__switchOn();
+      this.emit('up',this);
+    },
+    down: function(fn){
+      if(!this.state()) return;
+      _.Util.nextTick(this.$bind(function(){
+        _.funcs.immediate(this.$bind(fn));
+        this.__switchOff();
+        this.emit('down',this);
+      }));
     },
     registerQueries: function(){
       /* define the queries types for the querystream*/
     },
-    up: function(){
-      /* create the connections needed*/
-      _.Asserted(false,"must redefine function 'up' in subclass");
-    },
-    down: function(){
-      /* drop/end the connections needed*/
-      _.Asserted(false,"must redefine function 'down' in subclass");
+    request: function(title,fx,fn){
+      _.Asserted(_.valids.isString(title),'a string title/name for model must be supplied');
+      title = title.toLowerCase();
+      var packets = [], qr = _.Query(title,fx,fn), ft = _.FutureStream.make();
+      var push = _.funcs.bind(function(f){ this.push(f); },packets);
+
+      this.changes.on(push);
+      qr.future = function(){ return ft; };
+      qr.notify.addOnce(this.$bind(function(q){
+        ft.query = q;
+
+        ft.then(this.$bind(function(){
+          this.emit('query',q);
+        }));
+
+        ft.onError(this.$bind(function(){
+          this.emit('query:fail',q);
+        }));
+
+        this.queryJob(q,function(){
+          if(this && _.FutureStream.isType(this)){
+            this.chain(ft);
+          }
+        });
+
+      }));
+
+      qr.future().then(this.$bind(function(){
+        this.changes.endData();
+        this.changes.end();
+        this.changes.off(push);
+        this.queries.emit({ q: ft.query,  changes: packets});
+      }));
+      return qr;
     },
     query: function(q){
       if(_.valids.not.isObject(q) || _.valids.not.contains(q,'query')) return;
@@ -174,20 +233,7 @@ module.exports = (function(){
           this.connection.queryStream.where(i,e);
         }));
 
-        this.events.hookProxy(this);
         var master = null;
-
-        this.$secure('syncQuery',function(q,fx){
-          if(!_.Query.isQuery(q)) return;
-          this.after('up',this.$bind(function(){
-            var res = this.connection.queryJob(q);
-            if(_.valids.isFunction(fx)) fx.call(res);
-            this.qstreamCache.push(q);
-          }));
-          this.after('up:fail',this.$bind(function(){
-            this.emit('querySync:fail',q);
-          }));
-        });
 
         this.silentEvents = function(fn){
           if(!this.getConfigAttr(silentEvents)) return;
@@ -233,6 +279,12 @@ module.exports = (function(){
         this.events.events('deadSlave');
 
 
+        this.connection.after('query',this.$bind(function(){
+          this.emit('querySync',this);
+        }));
+        this.connection.after('query:fail',this.$bind(function(){
+          this.emit('querySync:fail',this);
+        }));
         this.connection.after('up',this.$bind(function(){
           this.emit('up',this);
         }));
@@ -245,6 +297,8 @@ module.exports = (function(){
         this.connection.after('down:fail',this.$bind(function(){
           this.emit('down:fail',this);
         }));
+
+        this.events.hookProxy(this);
 
       },
       up: function(){
@@ -263,19 +317,9 @@ module.exports = (function(){
       model: function(title,fn){
         _.Asserted(_.valids.isString(title),'a string title/name for model must be supplied');
         title = title.toLowerCase();
-        if(!this.schemas.has(title)) return;
-        var qr = _.Query(title,this.schemas.get(title),fn);
-        var ft = _.FutureStream.make();
-        qr.future = function(){ return ft; };
-        // qr.notify.add(this.$bind(this.syncQuery));
-        qr.notify.add(this.$bind(function(q){
-          ft.query = q;
-          this.syncQuery(q,function(tr){
-            if(this && _.FutureStream.isType(this)){
-              this.chain(ft);
-            }
-          });
-        }));
+        var qr = this.connection.request(title,this.$bind(function(){
+          return this.schemas.get(title);
+        }),fn);
         return qr;
       },
       slave: function(t,conf){
@@ -433,7 +477,7 @@ module.exports = (function(){
       soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
     });
 
-    sid.on(function(doc){
+    sid.on(this.$bind(function(doc){
 
       clond = _.Util.clone(doc);
       if(_.valids.isFunction(data)){
@@ -495,12 +539,12 @@ module.exports = (function(){
 
         if(_.valids.exists(udoc)){
           soud.emit(udoc);
-          scand.emit([udoc,clond]);
+          this.changes.emit({ 'i': 'u', old: clond, new: udoc });
         }else{
           soud.emit(doc);
         }
       }
-    });
+    }));
 
   });
 
@@ -509,19 +553,21 @@ module.exports = (function(){
     var data = q.key,
         condfn = data.condition,
         getter = data.getter,
+        setter = data.setter,
         key = data.key,
         value  = data.value;
 
     if(_.valids.not.isObject(data)) return;
 
-    var clond,sid = sx.in(), soud = sx.out(),report = sx.changes();
+    var clond,sid = sx.in(), soud = sx.out(),report = sx.changes(),total = 0;
 
     sid.afterEvent('dataEnd',function(){
+      sx.complete({'op':'yank', records: total});
       soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
     });
 
     var udoc = false;
-    sid.on(function(doc){
+    sid.on(this.$bind(function(doc){
         if(condfn){
           if(condfn.call(data,doc)){
             if(_.valids.isObject(doc) && _.valids.exists(key) && _.valids.contains(doc,key)){
@@ -566,6 +612,7 @@ module.exports = (function(){
           }
         }
         if(udoc){
+          total +=1;
           if(_.valids.isObject(doc)){
             var ddoc = _.Util.clone(doc);
             if(_.valids.isFunction(setter)){
@@ -573,17 +620,19 @@ module.exports = (function(){
             }else{
               delete doc[key];
             };
-            report.emit([ddoc,doc]);
+            // report.emit([ddoc,doc]);
+            this.changes.emit({ 'i': 'y', old: ddoc, new: doc });
             soud.emit(doc);
           }else{
             var ddoc = (_.valids.isFunction(setter) ? setter.call(doc,key) : doc);
-            report.emit([ddoc,doc]);
+            this.changes.emit({ 'i': 'y', old: ddoc, new: doc });
+            // report.emit([ddoc,doc]);
             soud.emit(ddoc);
           }
         }else{
           soud.emit(doc);
         }
-    });
+    }));
 
   });
 
@@ -596,9 +645,10 @@ module.exports = (function(){
         key = data.key,
         value  = data.value;
 
-    var clond,sid = sx.in(), soud = sx.out();
+    var clond,sid = sx.in(), soud = sx.out(),total = 0;
 
     sid.afterEvent('dataEnd',function(){
+      sx.complete({'op':'contains', records: total, by: data});
       soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
     });
 
@@ -649,6 +699,7 @@ module.exports = (function(){
           }
         }
         if(udoc){
+          total += 1;
           soud.emit(doc);
         }
       }
@@ -670,7 +721,6 @@ module.exports = (function(){
 
     sid.afterEvent('dataEnd',sx.$bind(sx.complete));
 
-
   });
 
   //format: { condition: , key:, value:, getter:  }
@@ -687,7 +737,7 @@ module.exports = (function(){
 
     sid.afterEvent('dataEnd',function(){
       if(count <= 0) sx.completeError(new Error('NonFound!'));
-      else sx.complete(true);
+      else sx.complete({'op':'filter', record: count});
       soud.emitEvent.apply(soud,['dataEnd'].concat(_.enums.toArray(arguments)));
     });
 
@@ -804,12 +854,21 @@ module.exports = (function(){
 
   });
 
-  // var QueryDoc = _.Class({
-  //   init: function(doc,mutator){
-  //     this.revs = _.List.make();
-  //     this.doc = doc;
-  //   },
-  // });
+  Quero.whereSchema('$index',function(m,q,sx,sm){
+    var mode = this.get(m), ind = {};
+
+    if(_.valids.isString(q.key)){ ind.index = q.key; };
+    if(_.valids.isObject(q.key)){ ind = q.key; }
+    if(_.valids.isList(q.key)){ ind = {}; ind.index = q.key };
+    if(_.valids.not.isString(q.key) && _.valids.not.isList(q.key) && _.valids.not.isObject(q.key)) return;
+    ind.options = q.key.options;
+
+    this.index = ind;
+
+    sx.loopStream();
+    sx.complete({'op': 'index',state:'true'});
+
+  });
 
   return Quero;
 }());
