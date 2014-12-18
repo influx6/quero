@@ -365,6 +365,13 @@ module.exports = (function(){
         this.emit('deadSlave',type);
       },
     },{
+      operations: {
+        'i': 'insert',
+        'u':'update',
+        'd': 'destroy',
+        'y': ['yank','removeProperty','removeAttr'],
+        'dr':'drop'
+      },
       schemaOperands: _.Storage.make('schema-operations-map'),
       providers: Connections.make(),
       Connections: Connections,
@@ -398,6 +405,7 @@ module.exports = (function(){
   Quero.whereSchema('$insert',function(m,q,sx,sm){
       sx.loopStream();
       sx.in().emit(q.key);
+      this.changes.emit({ 'i': 'i', record: q.key });
       sx.complete({'op':'insert','state':true});
   });
 
