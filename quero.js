@@ -60,10 +60,10 @@ module.exports = (function(){
       this.changes = _.Stream.make();
       this.queries = _.Stream.make();
 
-      // this.changes.transform(function(i){
-      //   if(_.valids.isObject(i)) return i;
-      //   return null;
-      // });
+      this.changes.transform(function(i){
+        if(_.valids.isObject(i)) return i;
+        return null;
+      });
 
       this.queries.transform(function(i){
         if(_.valids.isObject(i)) return i;
