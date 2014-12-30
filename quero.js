@@ -138,13 +138,16 @@ module.exports = (function(){
     registerQueries: function(){
       /* define the queries types for the querystream*/
     },
-    request: function(title,fx,fn){
-      _.Asserted(_.valids.isString(title),'a string title/name for model must be supplied');
-      title = title.toLowerCase();
-      var packets = [], qr = _.Query(title,fx,fn), ft = _.FutureStream.make();
+    requestQuery: function(qr,fn){
+      if(!_.Query.isQuery(qr)) return;
+      var packets = [], ft = _.FutureStream.make();
       var push = _.funcs.bind(function(f){ this.push(f); },packets);
+      var ftemit = ft.changes().$bind(ft.changes().emit);
+
+      qr.defineWith(fn);
 
       this.changes.on(push);
+      this.changes.on(ftemit)
       qr.future = function(){ return ft; };
       qr.notify.addOnce(this.$bind(function(q){
         ft.query = q;
@@ -169,6 +172,45 @@ module.exports = (function(){
         this.changes.endData();
         this.changes.end();
         this.changes.off(push);
+        this.changes.off(ftemit);
+        this.queries.emit({ q: ft.query,  changes: packets});
+      }));
+      return qr;
+    },
+    request: function(title,fx,fn){
+      _.Asserted(_.valids.isString(title),'a string title/name for model must be supplied');
+      title = title.toLowerCase();
+      var packets = [], qr = _.Query(title,fx,fn), ft = _.FutureStream.make();
+      var push = _.funcs.bind(function(f){ this.push(f); },packets);
+      var ftemit = ft.changes().$bind(ft.changes().emit);
+
+      this.changes.on(push);
+      this.changes.on(ftemit)
+      qr.future = function(){ return ft; };
+      qr.notify.addOnce(this.$bind(function(q){
+        ft.query = q;
+
+        ft.then(this.$bind(function(){
+          this.emit('query',q);
+        }));
+
+        ft.onError(this.$bind(function(){
+          this.emit('query:fail',q);
+        }));
+
+        this.queryJob(q,function(){
+          if(this && _.FutureStream.isType(this)){
+            this.chain(ft);
+          }
+        });
+
+      }));
+
+      qr.future().then(this.$bind(function(){
+        this.changes.endData();
+        this.changes.end();
+        this.changes.off(push);
+        this.changes.off(ftemit);
         this.queries.emit({ q: ft.query,  changes: packets});
       }));
       return qr;
@@ -322,6 +364,13 @@ module.exports = (function(){
         }),fn);
         return qr;
       },
+      modelQuery:function(q,fn){
+        _.Asserted(_.Query.isQuery(q),'must be a query object');
+        var qr = this.connection.requestQuery(q,this.$bind(function(){
+          return this.schemas.get(q.with);
+        }),fn);
+        return qr;
+      },
       slave: function(t,conf){
         if(Quero.isType(t)) return this.slaveInstance(t,conf);
         if(Connection.isType(t)) return this.slaveConnection(t,conf);
@@ -404,6 +453,7 @@ module.exports = (function(){
   //internal stream-item only operations
   Quero.whereSchema('$insert',function(m,q,sx,sm){
       sx.loopStream();
+      sx.in().onceEvent('drain',function(){ sx.in().endData(); });
       sx.in().emit(q.key);
       this.changes.emit({ 'i': 'i', record: q.key });
       sx.complete({'op':'insert','state':true});

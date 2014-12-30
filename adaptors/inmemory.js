@@ -155,6 +155,7 @@
         this.queryStream.where('$drop',function(m,q,sx,sm){
           var map = this.get(m), total = map.size();
           map.clear();
+          this.changes.emit({'i': 'dr', model: m, records: total });
           sx.complete({'op':'drop', state: true, records: total});
         });
 
@@ -175,6 +176,8 @@
               m[by] = index;
               map.add(index,m);
             }
+
+            this.changes.emit({'i': 's', model: m, doc: m, index: by});
             total += 1;
           });
 
@@ -204,6 +207,7 @@
               m[by] = index;
               map.add(index,m);
             }
+            this.changes.emit({'i': 's', model: m, doc: m, index: by});
             total += 1;
           });
 
